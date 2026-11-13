@@ -59,7 +59,7 @@ def test_fov800(tmp_path):
     assert convert(src, dst, 800.0) == 3
 
     a = pydicom.dcmread(src / "0.dcm")
-    b = pydicom.dcmread(sorted(dst.iterdir())[0])
+    b = pydicom.dcmread(sorted(dst.rglob("*.dcm"))[0])
     assert (b.Rows, b.Columns) == (512, 512)
     assert abs(float(b.PixelSpacing[0]) - 800 / 512) < 1e-4
     assert float(b.ReconstructionDiameter) == 800
@@ -83,3 +83,20 @@ def test_fov800(tmp_path):
     # Outside of new frame = air
     hu_b = b.pixel_array.astype(float) - 1024
     assert hu_b[0, 0] == -1024 and hu_b[256, 5] == -1024
+
+
+def test_multi_patient_and_out_inside_in(tmp_path):
+    src = tmp_path / "imported"
+    for pat in ("p1", "p2"):
+        (src / pat).mkdir(parents=True)
+        for k in range(2):
+            make_ct(src / pat / f"{k}.dcm", z=k * 3.0)
+    for pat, uid in (("p1", "1.1"), ("p2", "2.2")):
+        for f in (src / pat).iterdir():
+            d = pydicom.dcmread(f); d.SeriesInstanceUID = uid; d.save_as(f)
+    out = src / "FOV800 completed"
+    assert convert(src, out, 800.0) == 4
+    assert convert(src, out, 800.0) == 4  # re-run does not reconvert outputs
+    uids = {pydicom.dcmread(f).SeriesInstanceUID for f in (out / "p1").rglob("*.dcm")}
+    uids2 = {pydicom.dcmread(f).SeriesInstanceUID for f in (out / "p2").rglob("*.dcm")}
+    assert len(uids) == 1 and len(uids2) == 1 and uids != uids2

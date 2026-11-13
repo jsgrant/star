@@ -112,21 +112,52 @@ def extend_slice(ds, fov_mm: float, matrix: int, series_uid: str):
     return new
 
 
+def _safe(name: str) -> str:
+    keep = "".join(c if c.isalnum() or c in "-_.^ " else "_" for c in name).strip()
+    return keep or "unknown"
+
+
 def convert(in_dir: Path, out_dir: Path, fov_mm: float = 800.0, matrix: int | None = None) -> int:
+    """Convert every CT image under in_dir.
+
+    - Each original series gets its own new SeriesInstanceUID (patients/series are never merged).
+    - Output: out_dir/<original sub folder>/<series>/CT_....dcm
+    - Files already inside out_dir are skipped (out_dir may be inside in_dir).
+    """
+    in_dir, out_dir = in_dir.resolve(), out_dir.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    series_uid = generate_uid()
+    new_uids: dict[str, str] = {}
+    counters: dict[str, int] = {}
     n = 0
     for path in sorted(p for p in in_dir.rglob("*") if p.is_file()):
+        if out_dir == path.resolve().parent or out_dir in path.resolve().parents:
+            continue
         try:
             ds = pydicom.dcmread(path)
         except Exception:
             continue
         if "PixelData" not in ds or "ImagePositionPatient" not in ds:
             continue
+        if str(getattr(ds, "Modality", "CT")).upper() not in ("CT", ""):
+            continue
+        old_uid = str(getattr(ds, "SeriesInstanceUID", "")) or str(path.parent)
+        if old_uid not in new_uids:
+            new_uids[old_uid] = generate_uid()
         m = matrix or int(ds.Rows)
-        new = extend_slice(ds, fov_mm, m, series_uid)
-        new.save_as(out_dir / f"CT_FOV{fov_mm:g}_{n:04d}.dcm", enforce_file_format=True)
+        try:
+            new = extend_slice(ds, fov_mm, m, new_uids[old_uid])
+        except Exception as e:
+            print(f"  skip {path}: {e}")
+            continue
+        rel = path.parent.relative_to(in_dir)
+        sub = out_dir / rel / _safe(f"S{getattr(ds, 'SeriesNumber', '')}_FOV{fov_mm:g}")
+        sub.mkdir(parents=True, exist_ok=True)
+        k = counters.get(str(sub), 0)
+        counters[str(sub)] = k + 1
+        new.save_as(sub / f"CT_FOV{fov_mm:g}_{k:04d}.dcm", enforce_file_format=True)
         n += 1
+    for sub, k in sorted(counters.items()):
+        print(f"  {k:4d} slices -> {sub}")
     return n
 
 
